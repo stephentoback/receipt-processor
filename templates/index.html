@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Receipt Processor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+  </head>
+  <body>
+    <main>
+      <h1>Receipt Processor</h1>
+      <form id="receipt-form">
+        <label>
+          Your Name
+          <input id="preparer_name" name="preparer_name" value="{{ remembered_name }}" required />
+        </label>
+
+        <label>
+          Output Folder Name
+          <input id="output_subdir" name="output_subdir" value="processed" required />
+        </label>
+
+        <label>
+          Receipt PDFs
+          <input id="receipts" name="receipts" type="file" accept="application/pdf" multiple required />
+        </label>
+
+        <section id="metadata-grid"></section>
+        <button type="submit">Generate Cover Pages + Rename PDFs</button>
+      </form>
+      <pre id="result"></pre>
+    </main>
+
+    <template id="metadata-template">
+      <article class="receipt-card">
+        <h3 class="file-name"></h3>
+        <div class="grid">
+          <label>Vendor <input name="vendor" required /></label>
+          <label>Amount <input name="amount" type="number" step="0.01" required /></label>
+          <label>Date <input name="receipt_date" type="date" value="{{ 'now' }}" required /></label>
+          <label>Short Description <input name="short_description" required /></label>
+          <label>Project <input name="project" required /></label>
+          <label>Purchase <input name="purchase" required /></label>
+          <label>
+            Fund Code
+            <select name="fund_code">
+              <option value="">-- Suggest/Select --</option>
+              {% for code, label in fund_codes.items() %}
+              <option value="{{ code }}">{{ code }} - {{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <p class="suggestion"></p>
+      </article>
+    </template>
+
+    <script>
+      const fileInput = document.getElementById("receipts");
+      const metadataGrid = document.getElementById("metadata-grid");
+      const template = document.getElementById("metadata-template");
+      const form = document.getElementById("receipt-form");
+      const result = document.getElementById("result");
+
+      const today = new Date().toISOString().slice(0, 10);
+
+      function createCard(file, index) {
+        const clone = template.content.cloneNode(true);
+        const card = clone.querySelector(".receipt-card");
+        card.dataset.index = index;
+        clone.querySelector(".file-name").textContent = file.name;
+        clone.querySelector("input[name='receipt_date']").value = today;
+        return clone;
+      }
+
+      async function fetchVendorMemory(card) {
+        const vendorInput = card.querySelector("input[name='vendor']");
+        const value = vendorInput.value.trim();
+        if (!value) return;
+        const response = await fetch(`/memory?vendor=${encodeURIComponent(value)}`);
+        const memory = await response.json();
+        if (memory.fund_code) card.querySelector("select[name='fund_code']").value = memory.fund_code;
+        if (memory.project) card.querySelector("input[name='project']").value = memory.project;
+        if (memory.purchase) card.querySelector("input[name='purchase']").value = memory.purchase;
+      }
+
+      async function suggestCode(card) {
+        const payload = {
+          vendor: card.querySelector("input[name='vendor']").value,
+          purchase: card.querySelector("input[name='purchase']").value,
+          short_description: card.querySelector("input[name='short_description']").value,
+        };
+        const response = await fetch("/suggest-fund-code", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        const suggestion = card.querySelector(".suggestion");
+        if (data.fund_code) {
+          suggestion.textContent = `Suggested fund code: ${data.fund_code} - ${data.label} (confirm/edit as needed)`;
+          if (!card.querySelector("select[name='fund_code']").value) {
+            card.querySelector("select[name='fund_code']").value = data.fund_code;
+          }
+        } else {
+          suggestion.textContent = "No confident suggestion. Please select a fund code.";
+        }
+      }
+
+      fileInput.addEventListener("change", () => {
+        metadataGrid.innerHTML = "";
+        [...fileInput.files].forEach((file, index) => {
+          const card = createCard(file, index);
+          metadataGrid.appendChild(card);
+        });
+
+        document.querySelectorAll(".receipt-card").forEach((card) => {
+          card.querySelector("input[name='vendor']").addEventListener("blur", async () => {
+            await fetchVendorMemory(card);
+            await suggestCode(card);
+          });
+          ["purchase", "short_description"].forEach((name) => {
+            card.querySelector(`input[name='${name}']`).addEventListener("blur", () => suggestCode(card));
+          });
+        });
+      });
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const data = new FormData();
+        const files = [...fileInput.files];
+        files.forEach((file) => data.append("receipts", file));
+        data.append("preparer_name", document.getElementById("preparer_name").value);
+        data.append("output_subdir", document.getElementById("output_subdir").value);
+
+        const metadata = [...document.querySelectorAll(".receipt-card")].map((card) => ({
+          vendor: card.querySelector("input[name='vendor']").value,
+          amount: card.querySelector("input[name='amount']").value,
+          receipt_date: card.querySelector("input[name='receipt_date']").value,
+          short_description: card.querySelector("input[name='short_description']").value,
+          project: card.querySelector("input[name='project']").value,
+          purchase: card.querySelector("input[name='purchase']").value,
+          fund_code: card.querySelector("select[name='fund_code']").value,
+        }));
+        data.append("metadata", JSON.stringify(metadata));
+
+        const response = await fetch("/process", { method: "POST", body: data });
+        const payload = await response.json();
+        result.textContent = JSON.stringify(payload, null, 2);
+      });
+    </script>
+  </body>
+</html>
